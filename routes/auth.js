@@ -111,7 +111,9 @@ router.post("/register", async (req, res) => {
 router.post("/verify", async (req, res) => {
   try {
     const { phone, code } = req.body;
-    const user = await User.findOne({ phone });
+    const user = await User.findOne({
+  $or: [{ phone }, { email: phone }],
+});
 
     if (!user) {
       return res.status(400).json({ message: "Kullanıcı bulunamadı" });
