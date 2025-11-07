@@ -259,49 +259,64 @@ router.post("/complete-profile", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const { phone, password, deviceId } = req.body;
-    const user = await User.findOne({ phone });
+
+    // 🔹 Telefon veya e-posta ile giriş destekleniyor
+    const user = await User.findOne({
+      $or: [{ phone }, { email: phone }],
+    });
 
     if (!user) {
       return res.status(400).json({ status: "error", message: "Kullanıcı bulunamadı" });
     }
 
-    // ✅ Önce şifreyi kontrol et
+    // ✅ Şifreyi kontrol et
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ status: "error", message: "Şifre hatalı" });
     }
 
-    // ✅ Cihaz kontrolü
-    if (user.deviceId && user.deviceId !== deviceId) {
+    // 🔹 ADMIN kullanıcıları için tam bypass (PIN, profil, verify atlanır)
+    if (user.role === "admin") {
+      const token = generateToken(user);
+      console.log("✅ Admin girişi başarılı:", user.email);
+
       return res.json({
-        status: "deviceVerification",
-        message: "Farklı cihazdan giriş yapılıyor. Doğrulama gerekli."
+        status: "admin",
+        message: "Admin girişi başarılı",
+        token,
+        user: {
+          email: user.email,
+          role: user.role,
+        },
       });
     }
 
-    // ✅ Eğer verified değilse → verify ekranı
+    // 🟡 Bireysel kullanıcı akışı
+    if (user.deviceId && user.deviceId !== deviceId) {
+      return res.json({
+        status: "deviceVerification",
+        message: "Farklı cihazdan giriş yapılıyor. Doğrulama gerekli.",
+      });
+    }
+
     if (!user.verified) {
       return res.json({ status: "verify", message: "Doğrulama kodu gerekli" });
     }
 
-    // ✅ Eğer PIN oluşturulmadıysa → createPin ekranı
     if (!user.pinCreated) {
       return res.json({ status: "createPin", message: "PIN oluşturmanız gerekiyor" });
     }
 
-    // ✅ Eğer profil tamamlanmadıysa → profileInfo ekranı
     if (!user.profileCompleted) {
       return res.json({ status: "profileInfo", message: "Profil bilgilerini doldurmanız gerekiyor" });
     }
 
-    // ✅ İlk login tamamlandıysa → PIN login
     if (user.firstLoginCompleted) {
       return res.json({ status: "loginPin", message: "PIN ile giriş yapmalısınız" });
     }
 
-    // ✅ İlk login değilse → direkt home
     user.firstLoginCompleted = true;
-    user.deviceId = deviceId; // 📌 cihaz kaydedilir
+    user.deviceId = deviceId;
     await user.save();
 
     const token = generateToken(user);
@@ -312,19 +327,21 @@ router.post("/login", async (req, res) => {
       token,
       user: {
         phone: user.phone,
-        role: user.role,           // ✅ role eklendi
+        role: user.role,
         verified: user.verified,
         pinCreated: user.pinCreated,
         profileCompleted: user.profileCompleted,
         firstLoginCompleted: user.firstLoginCompleted,
       },
     });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ status: "error", message: "Sunucu hatası" });
   }
 });
+
+
+
 
 
 

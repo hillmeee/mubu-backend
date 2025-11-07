@@ -3,7 +3,8 @@ const mongoose = require("mongoose");
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: false }, // doğrulamadan önce boş olabilir
-    phone: { type: String, required: true, unique: true },
+    phone: { type: String, required: false, unique: true, sparse: true }, // Admin için opsiyonel
+    email: { type: String, required: false, unique: true, sparse: true }, // Email alanı eklendi
     password: { type: String, required: true },
     pin: { type: String }, // 👈 Hashlenmiş PIN burada saklanacak
 
@@ -14,7 +15,7 @@ const userSchema = new mongoose.Schema(
     // Kullanıcı rolü
     role: {
       type: String,
-      enum: ["individual", "parent", "child"],
+      enum: ["individual", "parent", "child", "admin"],
       default: "individual"
     },
 
