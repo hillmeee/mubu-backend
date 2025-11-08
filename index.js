@@ -29,6 +29,7 @@ const transactionRoutes = require("./routes/transactionRoutes");
 const subscriptionRoutes = require("./routes/subscriptionRoutes");
 
 // ✅ Routes use
+app.use("/api/admin-auth", adminAuthRoutes); // 👈 admin seed route aktif
 app.use("/api/auth", authRoutes);
 app.use("/api/sms", smsRoutes);
 app.use("/api/wallet", walletRoutes);

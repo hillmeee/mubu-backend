@@ -3,7 +3,7 @@ const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const router = express.Router();
 
-// 🚨 Bu route sadece geçici olarak kullanılacak (admin oluşturur)
+// 🚨 Geçici admin oluşturma route
 router.get("/create-admin", async (req, res) => {
   try {
     const email = "admin@mubu.com";
