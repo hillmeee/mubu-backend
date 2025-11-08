@@ -19,7 +19,6 @@ mongoose.connect(process.env.MONGO_URI, {
 .catch(err => console.error(err));
 
 // ✅ Routes import
-const adminAuthRoutes = require("./routes/adminAuth"); // 👈 admin seed route eklendi
 const authRoutes = require("./routes/auth");
 const smsRoutes = require("./routes/sms");
 const walletRoutes = require("./routes/walletRoutes");
@@ -27,9 +26,9 @@ const profileRoutes = require("./routes/profile");// 👈 yeni ekledik
 const piggyBankRoutes = require("./routes/piggybankRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
 const subscriptionRoutes = require("./routes/subscriptionRoutes");
+const adminAuthRoutes = require("./routes/adminAuth"); // 👈 admin seed route eklendi
 
 // ✅ Routes use
-app.use("/api/admin-auth", adminAuthRoutes); // 👈 admin seed route aktif
 app.use("/api/auth", authRoutes);
 app.use("/api/sms", smsRoutes);
 app.use("/api/wallet", walletRoutes);
@@ -39,6 +38,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/piggybank", piggyBankRoutes);
 app.use("/api", transactionRoutes);
 app.use("/api/subscription", subscriptionRoutes);
+app.use("/api/admin-auth", adminAuthRoutes); // 👈 admin seed route aktif
 
 // ✅ Test endpoint
 app.get("/", (req, res) => {
