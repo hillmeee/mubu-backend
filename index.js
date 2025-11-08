@@ -19,6 +19,7 @@ mongoose.connect(process.env.MONGO_URI, {
 .catch(err => console.error(err));
 
 // ✅ Routes import
+const adminAuthRoutes = require("./routes/adminAuth"); // 👈 admin seed route eklendi
 const authRoutes = require("./routes/auth");
 const smsRoutes = require("./routes/sms");
 const walletRoutes = require("./routes/walletRoutes");
