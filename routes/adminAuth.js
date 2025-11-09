@@ -1,48 +1,26 @@
-// 📂 routes/adminAuth.js
 const express = require("express");
 const router = express.Router();
-const bcrypt = require("bcryptjs");
 const User = require("../models/User");
+const Wallet = require("../models/Wallet");
+const Notification = require("../models/Notification");
 
-// ✅ Test endpoint (route aktif mi görmek için)
-router.get("/", (req, res) => {
-  res.send("✅ adminAuth route aktif");
-});
-
-// 🔐 Admin oluşturma veya güncelleme
-router.get("/create-admin", async (req, res) => {
+// ✅ Test endpoint: Şifresiz erişim — sadece veri çekmeyi dener
+router.get("/test", async (req, res) => {
   try {
-    const adminEmail = "admin@mubu.com";
-    const adminPassword = "Admin123!";
+    const userCount = await User.countDocuments();
+    const totalWallets = await Wallet.countDocuments();
+    const notifCount = await Notification.countDocuments();
 
-    let admin = await User.findOne({ email: adminEmail });
-
-    const hashedPassword = await bcrypt.hash(adminPassword, 10);
-
-    if (admin) {
-      admin.password = hashedPassword;
-      admin.role = "admin";
-      admin.verified = true;
-      admin.profileCompleted = true;
-      admin.pinCreated = true;
-      await admin.save();
-      return res.json({ success: true, message: "✅ Admin güncellendi!" });
-    } else {
-      const newAdmin = new User({
-        email: adminEmail,
-        password: hashedPassword,
-        role: "admin",
-        verified: true,
-        profileCompleted: true,
-        pinCreated: true,
-        name: "Admin User",
-      });
-      await newAdmin.save();
-      return res.json({ success: true, message: "✅ Yeni admin oluşturuldu!" });
-    }
+    res.json({
+      success: true,
+      users: userCount,
+      wallets: totalWallets,
+      notifications: notifCount,
+      message: "✅ Veritabanı bağlantısı başarılı!"
+    });
   } catch (err) {
-    console.error("❌ Admin oluşturma hatası:", err);
-    res.status(500).json({ success: false, message: "Sunucu hatası" });
+    console.error("DB test hatası:", err);
+    res.status(500).json({ success: false, message: "Veritabanı bağlantı hatası" });
   }
 });
 
