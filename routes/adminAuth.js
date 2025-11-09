@@ -1,12 +1,13 @@
 // 📂 routes/adminAuth.js
 const express = require("express");
-router.get("/", (req, res) => {
-  res.send("✅ adminAuth route aktif");
-});
-
 const router = express.Router();
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
+
+// ✅ Test endpoint (route aktif mi görmek için)
+router.get("/", (req, res) => {
+  res.send("✅ adminAuth route aktif");
+});
 
 // 🔐 Admin oluşturma veya güncelleme
 router.get("/create-admin", async (req, res) => {
