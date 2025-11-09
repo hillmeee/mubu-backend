@@ -27,7 +27,7 @@ const piggyBankRoutes = require("./routes/piggybankRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
 const subscriptionRoutes = require("./routes/subscriptionRoutes");
 const adminAuthRoutes = require("./routes/adminAuth"); // 👈 admin seed route eklendi
-
+console.log("✅ adminAuth route eklendi");
 // ✅ Routes use
 app.use("/api/auth", authRoutes);
 app.use("/api/sms", smsRoutes);
