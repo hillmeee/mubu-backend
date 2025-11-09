@@ -4,23 +4,27 @@ const User = require("../models/User");
 const Wallet = require("../models/Wallet");
 const Notification = require("../models/Notification");
 
-// ✅ Test endpoint: Şifresiz erişim — sadece veri çekmeyi dener
+// ✅ Basit test endpoint (şifresiz veri çekme)
 router.get("/test", async (req, res) => {
   try {
     const userCount = await User.countDocuments();
-    const totalWallets = await Wallet.countDocuments();
+    const walletCount = await Wallet.countDocuments();
     const notifCount = await Notification.countDocuments();
 
     res.json({
       success: true,
       users: userCount,
-      wallets: totalWallets,
+      wallets: walletCount,
       notifications: notifCount,
-      message: "✅ Veritabanı bağlantısı başarılı!"
+      message: "✅ Veritabanı bağlantısı başarılı!",
     });
   } catch (err) {
     console.error("DB test hatası:", err);
-    res.status(500).json({ success: false, message: "Veritabanı bağlantı hatası" });
+    res.status(500).json({
+      success: false,
+      message: "Veritabanı bağlantı hatası",
+      error: err.message,
+    });
   }
 });
 
