@@ -38,7 +38,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/piggybank", piggyBankRoutes);
 app.use("/api", transactionRoutes);
 app.use("/api/subscription", subscriptionRoutes);
-app.use("/api/admin-auth", adminAuthRoutes); // 👈 admin seed route aktif
+app.use("/api/admin", adminAuthRoutes); // 👈 admin seed route aktif
 
 // ✅ Test endpoint
 app.get("/", (req, res) => {
