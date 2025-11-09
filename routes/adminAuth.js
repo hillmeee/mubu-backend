@@ -41,7 +41,7 @@ router.post("/login", async (req, res) => {
       success: true,
       message: "Giriş başarılı.",
       token,
-      admin: {
+      user: {
         name: admin.name,
         email: admin.email,
       },
