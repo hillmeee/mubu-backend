@@ -1,5 +1,9 @@
 // 📂 routes/adminAuth.js
 const express = require("express");
+router.get("/", (req, res) => {
+  res.send("✅ adminAuth route aktif");
+});
+
 const router = express.Router();
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
