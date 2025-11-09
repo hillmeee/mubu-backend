@@ -44,6 +44,7 @@ router.post("/login", async (req, res) => {
       user: {
         name: admin.name,
         email: admin.email,
+        role: admin.role, // 👈 BU SATIRI EKLİYORUZ
       },
     });
   } catch (err) {
