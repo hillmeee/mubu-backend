@@ -1,3 +1,5 @@
+// 📁 C:\Users\ahmet\admins\mubu-backend\models\User.js
+
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema(
@@ -46,6 +48,9 @@ const userSchema = new mongoose.Schema(
     // SMS doğrulama alanları
     verificationCode: { type: String },
     verificationExpires: { type: Date },
+
+    // 🟣 Yeni alan — kullanıcı banlanabilir
+    isBanned: { type: Boolean, default: false },
 
     createdAt: { type: Date, default: Date.now }
   },

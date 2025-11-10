@@ -27,7 +27,8 @@ const piggyBankRoutes = require("./routes/piggybankRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
 const subscriptionRoutes = require("./routes/subscriptionRoutes");
 const adminAuthRoutes = require("./routes/adminAuth"); // 👈 admin seed route eklendi
-console.log("✅ adminAuth route eklendi");
+const adminRoutes = require("./routes/adminRoutes");
+//console.log("✅ adminAuth route eklendi");
 // ✅ Routes use
 app.use("/api/auth", authRoutes);
 app.use("/api/sms", smsRoutes);
@@ -39,6 +40,7 @@ app.use("/api/piggybank", piggyBankRoutes);
 app.use("/api", transactionRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/admin", adminAuthRoutes); // 👈 admin seed route aktif
+app.use("/api/admin", adminRoutes);
 
 // ✅ Test endpoint
 app.get("/", (req, res) => {
