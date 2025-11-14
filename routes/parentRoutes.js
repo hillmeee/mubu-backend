@@ -1,0 +1,1306 @@
+const express = require("express");
+const router = express.Router();
+const User = require("../models/User");
+const ParentSubscription = require("../models/ParentSubscription");
+const authMiddleware = require("../middleware/authMiddleware");
+const Notification = require("../models/Notification");
+const Wallet = require("../models/Wallet");
+const bcrypt = require("bcryptjs");
+const { sendSMS } = require("../services/smsService");
+const AllowanceHistory = require("../models/AllowanceHistory");
+const SuggestedTask = require("../models/SuggestedTask");
+const Task = require("../models/Task");
+
+
+async function generateUniqueInviteID() {
+  let inviteID;
+  let exists = true;
+  while (exists) {
+    inviteID = "#" + Math.floor(100000000 + Math.random() * 900000000);
+    exists = await User.exists({ inviteID });
+  }
+  return inviteID;
+}
+
+/**
+ * 🎯 Aktif ebeveyn abonelik bilgisi
+ * GET /api/parent/subscription
+ */
+router.get("/subscription", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    const subscription = await ParentSubscription.findOne({
+      $or: [{ userId }, { spouseId: userId }],
+    })
+      .populate("userId", "_id role")
+      .populate("spouseId", "_id role")
+      .populate("children", "_id role");
+
+    if (!subscription) {
+      return res.status(404).json({
+        success: false,
+        message: "Aktif ebeveyn aboneliği bulunamadı.",
+      });
+    }
+
+    const ProfileInfo = require("../models/ProfileInfo");
+    let userName = "";
+    let spouseName = "";
+
+    // 💡 1️⃣ Eğer subscription.spouseId doluysa (davet edilen kişi bu)
+    if (subscription.spouseId) {
+      const myProfile = await ProfileInfo.findOne({ userId: subscription.spouseId }).lean();
+      const spouseProfile = await ProfileInfo.findOne({ userId: subscription.userId }).lean();
+
+      userName = myProfile?.name || "";
+      spouseName = spouseProfile?.name || "";
+    }
+    // 💡 2️⃣ Eğer subscription.spouseId boşsa (davet gönderen kişi bu)
+    else {
+      const myProfile = await ProfileInfo.findOne({ userId: subscription.userId }).lean();
+      userName = myProfile?.name || "";
+      spouseName = "";
+    }
+
+    res.json({
+      success: true,
+      subscription,
+      userName,
+      spouseName,
+      purchaseDate:
+        subscription.createdAt || subscription.startDate || new Date(),
+    });
+  } catch (err) {
+    console.error("❌ Abonelik getirme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+
+
+/**
+ * 🎯 2. Çocuk ekleme (yeni çocuk hesabı oluşturma)
+ * POST /api/parent/add-child
+ */
+router.post("/add-child", authMiddleware, async (req, res) => {
+  try {
+    const parentId = req.user.userId;
+    const { name, phone, password } = req.body;
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // 👨‍👩‍👧 Ebeveyn kontrolü
+    const parent = await User.findById(parentId);
+    if (!parent || parent.role !== "parent") {
+      return res.status(403).json({
+        success: false,
+        message: "Sadece ebeveyn kullanıcılar çocuk ekleyebilir.",
+      });
+    }
+
+    // 📞 Telefon kontrolü
+    const existing = await User.findOne({ phone });
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: "Bu telefon numarası zaten kayıtlı.",
+      });
+    }
+
+    // 👨‍👩‍👧 Parent ID listesi (eş varsa dahil et)
+    const parentIds = [parentId];
+    if (parent.wife_husband) parentIds.push(parent.wife_husband);
+
+    // 🔹 Benzersiz davet kodu
+    const inviteID = await generateUniqueInviteID();
+
+    // 🔹 Doğrulama kodu
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationExpires = new Date(Date.now() + 5 * 60 * 1000);
+
+    // 🔹 1️⃣ User kaydı oluştur (isim burada yok)
+    const child = new User({
+      phone,
+      password: hashedPassword,
+      role: "child",
+      parentIds,
+      verified: false,
+      inviteID,
+      verificationCode,
+      verificationExpires,
+    });
+    await child.save();
+
+    // 🔹 2️⃣ ProfileInfo kaydı oluştur (isim burada)
+    const ProfileInfo = require("../models/ProfileInfo");
+    const profile = new ProfileInfo({
+      userId: child._id,
+      name, // ✅ isim burada tutulur
+    });
+    await profile.save();
+
+    // Profile bağlantısını güncelle
+    child.profileInfoId = profile._id;
+    await child.save();
+
+    // 🔹 3️⃣ Çocuğa cüzdan oluştur
+    const childWallet = new Wallet({
+      userId: child._id,
+      balance: 0,
+      name: `${name} Cüzdanı`,
+    });
+    await childWallet.save();
+
+    // 🔹 4️⃣ SMS gönder
+    await sendSMS(phone, `MUBU doğrulama kodunuz: ${verificationCode}`);
+
+    // 🔹 5️⃣ Parent ve Subscription güncelle
+    parent.children.push(child._id);
+    await parent.save();
+
+    if (parent.wife_husband) {
+      const spouse = await User.findById(parent.wife_husband);
+      if (spouse) {
+        spouse.children.push(child._id);
+        await spouse.save();
+      }
+    }
+
+    const subscription = await ParentSubscription.findOne({
+      $or: [{ userId: parentId }, { spouseId: parentId }],
+    });
+    if (subscription) {
+      subscription.children.push(child._id);
+      await subscription.save();
+    }
+
+    // 🔹 6️⃣ Bildirim oluştur
+    await Notification.create({
+      userId: parentId,
+      type: "child_added",
+      description: `${name} isimli çocuk hesabı oluşturuldu ve doğrulama kodu gönderildi.`,
+      relatedUserId: child._id,
+      status: "success",
+    });
+
+    // 🔹 7️⃣ Başarılı yanıt
+// 🔹 7️⃣ Başarılı yanıt (Flutter ile uyumlu hale getirildi)
+    res.json({
+      success: true,
+      message: "Çocuk hesabı oluşturuldu ve doğrulama kodu gönderildi.",
+      childId: child._id, // ✅ Flutter burayı bekliyor
+      phone: child.phone,
+      name: profile.name,
+    });
+    
+  } catch (err) {
+    console.error("❌ Çocuk ekleme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+
+/**
+ * 🎯 2.1 Çocuk hesabı doğrulama kodu gönderme
+ * POST /api/parent/send-child-code
+ */
+router.post("/send-child-code", authMiddleware, async (req, res) => {
+  try {
+    const { childId } = req.body;
+    const parentId = req.user.userId;
+
+    // 1️⃣ Çocuğu bul
+    const child = await User.findById(childId);
+    if (!child || child.role !== "child") {
+      return res.status(404).json({
+        success: false,
+        message: "Çocuk hesabı bulunamadı.",
+      });
+    }
+
+    // 2️⃣ Ebeveynlik kontrolü
+    const isParent = child.parentIds.some((id) => id.toString() === parentId.toString());
+    if (!isParent) {
+      return res.status(403).json({
+        success: false,
+        message: "Bu çocuk size bağlı değil.",
+      });
+    }
+
+    // 3️⃣ Çocuğun adını ProfileInfo'dan çek
+    const ProfileInfo = require("../models/ProfileInfo");
+    const profile = await ProfileInfo.findOne({ userId: child._id });
+
+    // 4️⃣ Kod üret ve kaydet
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expires = new Date(Date.now() + 5 * 60 * 1000); // 5 dk geçerli
+
+    child.verificationCode = code;
+    child.verificationExpires = expires;
+    await child.save();
+
+    // 5️⃣ SMS gönder
+    await sendSMS(child.phone, `MUBU doğrulama kodunuz: ${code}`);
+
+    // 6️⃣ Bildirim kaydı
+    await Notification.create({
+      userId: parentId,
+      type: "child_code_sent",
+      description: `${profile?.name || "Çocuk"} için doğrulama kodu gönderildi.`,
+      relatedUserId: child._id,
+      status: "success",
+    });
+
+    res.json({
+      success: true,
+      message: `${profile?.name || "Çocuk"} için doğrulama kodu gönderildi.`,
+    });
+  } catch (err) {
+    console.error("❌ Doğrulama kodu gönderme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+
+/**
+ * 🎯 2.2 Çocuk doğrulama kodu kontrolü
+ * POST /api/parent/verify-child
+ */
+router.post("/verify-child", authMiddleware, async (req, res) => {
+  try {
+    const { childId, code } = req.body;
+    const parentId = req.user.userId;
+
+    // 1️⃣ Çocuğu bul
+    const child = await User.findById(childId);
+    if (!child || child.role !== "child") {
+      return res.status(404).json({
+        success: false,
+        message: "Çocuk hesabı bulunamadı.",
+      });
+    }
+
+    // 2️⃣ Ebeveynlik kontrolü
+    const isParent = child.parentIds.some((id) => id.toString() === parentId.toString());
+    if (!isParent) {
+      return res.status(403).json({
+        success: false,
+        message: "Bu çocuk size bağlı değil.",
+      });
+    }
+
+    // 3️⃣ Kod kontrolü
+    if (!child.verificationCode || !child.verificationExpires) {
+      return res.status(400).json({
+        success: false,
+        message: "Bu kullanıcıya ait aktif doğrulama kodu yok.",
+      });
+    }
+
+    if (Date.now() > new Date(child.verificationExpires).getTime()) {
+      return res.status(400).json({
+        success: false,
+        message: "Doğrulama kodunun süresi dolmuş.",
+      });
+    }
+
+    if (child.verificationCode !== code) {
+      return res.status(400).json({
+        success: false,
+        message: "Geçersiz doğrulama kodu.",
+      });
+    }
+
+    // 4️⃣ Doğrulama başarılı → güncelle
+    child.verified = true;
+    child.verificationCode = null;
+    child.verificationExpires = null;
+    await child.save();
+
+    // 5️⃣ Profil bilgisini al
+    const ProfileInfo = require("../models/ProfileInfo");
+    const profile = await ProfileInfo.findOne({ userId: child._id });
+
+    // 6️⃣ Bildirim oluştur
+    await Notification.create({
+      userId: parentId,
+      type: "child_verified",
+      description: `${profile?.name || "Çocuk"} hesabı başarıyla doğrulandı.`,
+      relatedUserId: child._id,
+      status: "success",
+    });
+
+    res.json({
+      success: true,
+      message: `${profile?.name || "Çocuk"} hesabı başarıyla doğrulandı.`,
+      verified: true,
+    });
+  } catch (err) {
+    console.error("❌ Çocuk doğrulama hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+
+/**
+ * 🎯 2.3 Çocuk için PIN oluşturma
+ * POST /api/parent/create-child-pin
+ */
+router.post("/create-child-pin", authMiddleware, async (req, res) => {
+  try {
+    const parentId = req.user.userId;
+    const { childId, pin } = req.body;
+
+    // 1️⃣ Giriş kontrolü
+    if (!childId || !pin || pin.length !== 5) {
+      return res.status(400).json({
+        success: false,
+        message: "Geçerli bir çocuk ID ve 5 haneli PIN girilmelidir.",
+      });
+    }
+
+    // 2️⃣ Ebeveyn & çocuk doğrulama
+    const parent = await User.findById(parentId);
+    const child = await User.findById(childId);
+    if (!child || child.role !== "child") {
+      return res.status(404).json({
+        success: false,
+        message: "Çocuk hesabı bulunamadı.",
+      });
+    }
+
+    const isParent = child.parentIds.some((id) => id.toString() === parentId.toString());
+    if (!isParent) {
+      return res.status(403).json({
+        success: false,
+        message: "Bu çocuk size bağlı değil, işlem yapılamaz.",
+      });
+    }
+
+    // 3️⃣ PIN kuralları
+    const sequential = "0123456789";
+    const isSequential =
+      sequential.includes(pin) || sequential.includes(pin.split("").reverse().join(""));
+    const isRepeated = /(.)\1{2,}/.test(pin); // aynı rakam 3+ tekrar ederse
+
+    if (isSequential) {
+      return res.status(400).json({
+        success: false,
+        message: "PIN sıralı olamaz (örnek: 12345 veya 54321).",
+      });
+    }
+    if (isRepeated) {
+      return res.status(400).json({
+        success: false,
+        message: "PIN 3 aynı rakamı arka arkaya içeremez.",
+      });
+    }
+
+    // 4️⃣ PIN hashle
+    const hashedPin = await bcrypt.hash(pin, 10);
+
+    // 5️⃣ Kaydet
+    child.pin = hashedPin;
+    child.pinCreated = true;
+    await child.save();
+
+    // 6️⃣ Çocuğun adını ProfileInfo'dan çek
+    const ProfileInfo = require("../models/ProfileInfo");
+    const profile = await ProfileInfo.findOne({ userId: child._id });
+
+    // 7️⃣ Bildirim oluştur
+    await Notification.create({
+      userId: parentId,
+      type: "child_pin_created",
+      description: `${profile?.name || "Çocuk"} için PIN başarıyla oluşturuldu.`,
+      relatedUserId: child._id,
+      status: "success",
+    });
+
+    // 8️⃣ Cevap döndür
+    res.json({
+      success: true,
+      message: `${profile?.name || "Çocuk"} için PIN başarıyla oluşturuldu.`,
+      pinCreated: true,
+    });
+  } catch (err) {
+    console.error("❌ Çocuk PIN oluşturma hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+/**
+ * 🎯 2.4 Çocuk profil bilgilerini tamamlama
+ * POST /api/parent/complete-child-profile
+ */
+router.post("/complete-child-profile", authMiddleware, async (req, res) => {
+  try {
+    const parentId = req.user.userId;
+    const { childId, dob, tcNo, email, city, district, securityQuestion, securityAnswer } = req.body;
+
+    // 1️⃣ Giriş kontrolü
+    if (!childId || !dob || !tcNo || !email || !city || !district) {
+      return res.status(400).json({
+        success: false,
+        message: "Lütfen tüm profil bilgilerini giriniz.",
+      });
+    }
+
+    // 2️⃣ Ebeveyn ve çocuk kontrolü
+    const parent = await User.findById(parentId);
+    const child = await User.findById(childId);
+
+    if (!child || child.role !== "child") {
+      return res.status(404).json({
+        success: false,
+        message: "Çocuk hesabı bulunamadı.",
+      });
+    }
+
+    // 👨‍👩‍👧 Ebeveynlik kontrolü
+    const isParent = child.parentIds.some((id) => id.toString() === parentId.toString());
+    if (!isParent) {
+      return res.status(403).json({
+        success: false,
+        message: "Bu çocuk size bağlı değil.",
+      });
+    }
+
+    // 3️⃣ ProfileInfo kaydını getir veya oluştur
+    const ProfileInfo = require("../models/ProfileInfo");
+    let profile = await ProfileInfo.findOne({ userId: child._id });
+
+    if (profile) {
+      profile.dob = dob;
+      profile.tcNo = tcNo;
+      profile.email = email;
+      profile.city = city;
+      profile.district = district;
+      await profile.save();
+    } else {
+      profile = new ProfileInfo({
+        userId: child._id,
+        dob,
+        tcNo,
+        email,
+        city,
+        district,
+      });
+      await profile.save();
+    }
+
+    // 4️⃣ Güvenlik sorusu & cevabı kaydet (opsiyonel)
+    if (securityQuestion && securityAnswer) {
+      child.securityQuestion = securityQuestion;
+      child.securityAnswer = await bcrypt.hash(securityAnswer, 10);
+    }
+
+    // 5️⃣ Kullanıcı bilgilerini güncelle
+    child.profileCompleted = true;
+    child.profileInfoId = profile._id;
+    await child.save();
+
+    // 6️⃣ Bildirim oluştur
+    await Notification.create({
+      userId: parentId,
+      type: "child_profile_completed",
+      description: `${profile.name || "Çocuk"} için profil bilgileri tamamlandı.`,
+      relatedUserId: child._id,
+      status: "success",
+    });
+
+    // 7️⃣ Yanıt
+    res.json({
+      success: true,
+      message: `${profile.name || "Çocuk"} için profil bilgileri başarıyla kaydedildi.`,
+      profile,
+    });
+  } catch (err) {
+    console.error("❌ Çocuk profil tamamlama hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+/**
+ * 🎯 3. Eş daveti gönderme (davet olarak)
+ * POST /api/parent/invite-spouse
+ */
+router.post("/invite-spouse", authMiddleware, async (req, res) => {
+  try {
+    const parentId = req.user.userId;
+    const { inviteId } = req.body;
+
+    const parent = await User.findById(parentId);
+    if (!parent || parent.role !== "parent") {
+      return res.status(403).json({
+        success: false,
+        message: "Sadece ebeveyn kullanıcılar davet gönderebilir.",
+      });
+    }
+
+    const spouse = await User.findOne({ inviteID: inviteId });
+    if (!spouse) {
+      return res.status(404).json({
+        success: false,
+        message: "Bu davet koduna sahip kullanıcı bulunamadı.",
+      });
+    }
+
+    // ✅ Zaten bir eş varsa veya daha önce davet edilmişse engelle
+    if (parent.wife_husband || spouse.wife_husband) {
+      return res.status(400).json({
+        success: false,
+        message: "Bu kullanıcı zaten bir eşe bağlı.",
+      });
+    }
+
+    const alreadyInvited = spouse.pendingSpouseInvites?.some(
+      (inv) => inv.from.toString() === parentId && inv.status === "pending"
+    );
+    if (alreadyInvited) {
+      return res.status(400).json({
+        success: false,
+        message: "Bu kullanıcıya zaten bir davet gönderilmiş.",
+      });
+    }
+
+    // 📩 Davet oluştur
+    spouse.pendingSpouseInvites.push({ from: parentId, status: "pending" });
+    parent.sentSpouseInvites.push({ to: spouse._id, status: "pending" });
+
+    await spouse.save();
+    await parent.save();
+
+    // 🔔 Bildirim oluştur
+    await Notification.create({
+      userId: spouse._id,
+      type: "spouse_invite_sent",
+      description: `${parent.name || "Bir kullanıcı"} seni Aile Yönetim Planı'na davet etti.`,
+      relatedUserId: parentId,
+      status: "pending",
+    });
+
+    res.json({
+      success: true,
+      message: `${spouse.name || "Kullanıcı"} için davet oluşturuldu.`,
+    });
+  } catch (err) {
+    console.error("❌ Eş daveti gönderme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+/**
+ * 🎯 3.1 Kullanıcının eş davetlerini listeleme
+ * GET /api/parent/spouse-invites
+ */
+router.get("/spouse-invites", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    const user = await User.findById(userId)
+      .populate("pendingSpouseInvites.from", "name phone inviteID");
+
+    const invites = user.pendingSpouseInvites.filter(inv => inv.status === "pending");
+
+    res.json({
+      success: true,
+      invites,
+    });
+  } catch (err) {
+    console.error("❌ Eş davetlerini getirme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+
+/**
+ * 🎯 3.2 Eş davetini kabul etme (geliştirilmiş)
+ * POST /api/parent/accept-spouse-invite
+ */
+router.post("/accept-spouse-invite", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId; // daveti kabul eden kişi
+    const { fromId } = req.body; // daveti gönderen kişi
+
+    const user = await User.findById(userId);
+    const inviter = await User.findById(fromId);
+
+    if (!user || !inviter) {
+      return res.status(404).json({ success: false, message: "Kullanıcı bulunamadı." });
+    }
+
+    // 🔍 Davet kontrolü
+    const invite = user.pendingSpouseInvites.find(
+      (inv) => inv.from.toString() === fromId && inv.status === "pending"
+    );
+    if (!invite) {
+      return res.status(400).json({ success: false, message: "Geçerli bir davet bulunamadı." });
+    }
+
+    // ✅ 1️⃣ Daveti kabul et ve eşleştir
+    user.wife_husband = inviter._id;
+    inviter.wife_husband = user._id;
+    invite.status = "accepted";
+
+    inviter.sentSpouseInvites = inviter.sentSpouseInvites.map((inv) =>
+      inv.to.toString() === userId ? { ...inv, status: "accepted" } : inv
+    );
+
+    // ✅ 2️⃣ Her iki kullanıcıyı parent yap
+    user.role = "parent";
+    inviter.role = "parent";
+
+    // ✅ 3️⃣ Abonelik bağlantısı oluştur / güncelle
+    const subscription = await ParentSubscription.findOne({
+      $or: [{ userId: inviter._id }, { spouseId: inviter._id }],
+    });
+
+    let activeSub;
+    if (subscription) {
+      // 🔹 Eş bilgisi yoksa doldur
+      if (!subscription.spouseId) subscription.spouseId = user._id;
+
+      // 🔹 Çocukları birleştir (varsa)
+      const allChildren = new Set([
+        ...subscription.children.map((id) => id.toString()),
+        ...(inviter.children || []).map((id) => id.toString()),
+        ...(user.children || []).map((id) => id.toString()),
+      ]);
+      subscription.children = [...allChildren];
+
+      activeSub = await subscription.save();
+    } else {
+      // 🔹 Eğer ana kullanıcıda abonelik yoksa yeni oluştur
+      const newSub = new ParentSubscription({
+        userId: inviter._id,
+        spouseId: user._id,
+        children: [...(inviter.children || []), ...(user.children || [])],
+      });
+      activeSub = await newSub.save();
+    }
+
+    // ✅ 4️⃣ Her iki kullanıcıya da abonelik bilgilerini yaz
+    user.subscriptionId = activeSub._id;
+    inviter.subscriptionId = activeSub._id;
+    user.subscriptionActive = true;
+    inviter.subscriptionActive = true;
+    user.subscriptionExpiresAt = activeSub.endDate;
+    inviter.subscriptionExpiresAt = activeSub.endDate;
+
+    await user.save();
+    await inviter.save();
+
+    // ✅ 5️⃣ Bildirimler
+    await Notification.create([
+      {
+        userId: inviter._id,
+        type: "spouse_invite_accepted",
+        description: `${user.name || "Kullanıcı"} davetini kabul etti.`,
+        relatedUserId: user._id,
+        status: "success",
+      },
+      {
+        userId: user._id,
+        type: "spouse_linked",
+        description: `${inviter.name || "Kullanıcı"} ile eşleştirildin.`,
+        relatedUserId: inviter._id,
+        status: "success",
+      },
+    ]);
+
+    return res.json({
+      success: true,
+      message: "Eşleştirme tamamlandı ve abonelik senkronize edildi.",
+      subscriptionId: activeSub._id,
+      expiresAt: activeSub.endDate,
+    });
+  } catch (err) {
+    console.error("❌ Eş davetini kabul etme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+
+
+/**
+ * 🎯 3.3 Eş davetini reddetme
+ * POST /api/parent/decline-spouse-invite
+ */
+router.post("/decline-spouse-invite", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { fromId } = req.body;
+
+    const user = await User.findById(userId);
+    const inviter = await User.findById(fromId);
+
+    if (!user || !inviter) {
+      return res.status(404).json({ success: false, message: "Kullanıcı bulunamadı." });
+    }
+
+    const invite = user.pendingSpouseInvites.find(
+      (inv) => inv.from.toString() === fromId && inv.status === "pending"
+    );
+
+    if (!invite) {
+      return res.status(400).json({ success: false, message: "Bekleyen davet bulunamadı." });
+    }
+
+    invite.status = "declined";
+    inviter.sentSpouseInvites = inviter.sentSpouseInvites.map((inv) =>
+      inv.to.toString() === userId ? { ...inv, status: "declined" } : inv
+    );
+
+    await user.save();
+    await inviter.save();
+
+    res.json({ success: true, message: "Davet reddedildi." });
+  } catch (err) {
+    console.error("❌ Eş davet reddetme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+
+
+/**
+ * 🎯 4. Ebeveynin çocuklarını listele (profil ve cüzdan bilgileriyle)
+ * GET /api/parent/children
+ */
+router.get("/children", authMiddleware, async (req, res) => {
+  try {
+    const parentId = req.user.userId;
+
+    // 1️⃣ Parent’a bağlı çocukları getir
+    const children = await User.find({ parentIds: parentId })
+      .select("verified pinCreated profileCompleted firstLoginCompleted role")
+      .lean();
+
+    if (!children.length) {
+      return res.json({
+        success: true,
+        children: [],
+        message: "Henüz kayıtlı bir çocuk bulunmuyor.",
+      });
+    }
+
+    // 2️⃣ Tüm çocukların profil adını ve cüzdan bakiyesini getir
+    const ProfileInfo = require("../models/ProfileInfo");
+    const Wallet = require("../models/Wallet");
+
+const enrichedChildren = await Promise.all(
+  children.map(async (child) => {
+    const profile = await ProfileInfo.findOne({ userId: child._id });
+    const wallet = await Wallet.findOne({ userId: child._id });
+
+    let status = "active";
+    if (!child.verified) status = "pendingVerification";
+    else if (!child.pinCreated) status = "pinNotCreated";
+    else if (!child.profileCompleted) status = "profileIncomplete";
+
+    return {
+      _id: child._id,
+      name: profile?.name || "İsimsiz Kullanıcı",
+      phone: child.phone || "",
+      verified: child.verified,
+      pinCreated: child.pinCreated,
+      profileCompleted: child.profileCompleted,
+      firstLoginCompleted: child.firstLoginCompleted,
+      walletBalance: wallet ? wallet.balance : 0,
+      role: child.role,
+      status,
+      avatar: profile?.avatar || null, // ✅ eklendi
+    };
+  })
+);
+
+
+
+    res.json({ success: true, children: enrichedChildren });
+  } catch (err) {
+    console.error("❌ Çocukları getirme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+/**
+ * 🎯 5. Harçlık gönderme (ebeveyn → çocuk)
+ * POST /api/parent/send-allowance
+ */
+router.post("/send-allowance", authMiddleware, async (req, res) => {
+  try {
+    const parentId = req.user.userId;
+    const { childId, amount } = req.body;
+    const sendAmount = Number(amount);
+    const AllowanceHistory = require("../models/AllowanceHistory");
+
+    // 1️⃣ Giriş kontrolleri
+    if (!childId || !sendAmount || sendAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Geçerli bir çocuk ve tutar belirtilmelidir.",
+      });
+    }
+
+    // 2️⃣ Ebeveyn doğrulaması
+    const parent = await User.findById(parentId);
+    if (!parent || parent.role !== "parent") {
+      return res.status(403).json({
+        success: false,
+        message: "Sadece ebeveyn kullanıcılar harçlık gönderebilir.",
+      });
+    }
+
+    // 3️⃣ Çocuk doğrulaması
+    const child = await User.findById(childId);
+    if (!child || child.role !== "child") {
+      return res.status(404).json({
+        success: false,
+        message: "Geçersiz çocuk hesabı.",
+      });
+    }
+
+    // 4️⃣ Ebeveyn–çocuk ilişkisini doğrula
+    const isParent = child.parentIds.some((id) => id.toString() === parentId.toString());
+    if (!isParent) {
+      return res.status(403).json({
+        success: false,
+        message: "Bu çocuk size bağlı değil, işlem yapılamaz.",
+      });
+    }
+
+    // 5️⃣ Cüzdanları bul
+    const parentWallet = await Wallet.findOne({ userId: parentId });
+    const childWallet = await Wallet.findOne({ userId: childId });
+
+    if (!parentWallet || !childWallet) {
+      return res.status(404).json({
+        success: false,
+        message: "Cüzdan bilgileri bulunamadı.",
+      });
+    }
+
+    if (parentWallet.balance < sendAmount) {
+      return res.status(400).json({
+        success: false,
+        message: "Yetersiz bakiye.",
+      });
+    }
+
+    // 6️⃣ İsimleri ProfileInfo'dan çek
+    const ProfileInfo = require("../models/ProfileInfo");
+    const parentProfile = await ProfileInfo.findOne({ userId: parentId });
+    const childProfile = await ProfileInfo.findOne({ userId: childId });
+
+    const parentName = parentProfile?.name || "Ebeveyn";
+    const childName = childProfile?.name || "Çocuk";
+
+    // 7️⃣ Bakiye güncelle
+    parentWallet.balance -= sendAmount;
+    childWallet.balance += sendAmount;
+    await parentWallet.save();
+    await childWallet.save();
+
+    // 8️⃣ Bildirim oluştur (ebeveyn + çocuk)
+    await Notification.create([
+      {
+        userId: parentId,
+        type: "allowance_sent",
+        description: `${childName} isimli çocuğa ₺${sendAmount.toFixed(2)} harçlık gönderildi.`,
+        relatedUserId: childId,
+        amount: sendAmount,
+        status: "success",
+      },
+      {
+        userId: childId,
+        type: "allowance_received",
+        description: `${parentName} size ₺${sendAmount.toFixed(2)} harçlık gönderdi.`,
+        relatedUserId: parentId,
+        amount: sendAmount,
+        status: "success",
+      },
+    ]);
+
+    // 9️⃣ Harçlık geçmişine kaydet
+    await AllowanceHistory.create({
+      childId: childId,
+      parentId: parentId,
+      walletId: parentWallet._id,
+      amount: sendAmount,
+      note: `₺${sendAmount.toFixed(2)} harçlık gönderildi.`,
+    });
+
+    // 🔟 Eğer çocuğa ait pending allowance_request varsa → tamamla
+    const parentIds = [parentId];
+    if (parent.wife_husband) parentIds.push(parent.wife_husband);
+
+    await Notification.updateMany(
+      {
+        userId: { $in: parentIds },
+        type: "allowance_request",
+        relatedUserId: childId,
+        status: "pending",
+      },
+      { $set: { status: "completed" } }
+    );
+
+    console.log(
+      `📘 Harçlık gönderildi: Parent(${parentId}) → Child(${childId}) ₺${sendAmount.toFixed(
+        2
+      )} | Pending istekler tamamlandı.`
+    );
+
+    // ✅ Başarılı yanıt
+    res.json({
+      success: true,
+      message: `${childName} isimli çocuğa ₺${sendAmount} harçlık başarıyla gönderildi.`,
+      newBalance: parentWallet.balance,
+      childNewBalance: childWallet.balance,
+    });
+  } catch (err) {
+    console.error("❌ Harçlık gönderme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+
+/**
+ * 🎯 6. Çocuğun kayıt aşamasını getir (hangi adımda kaldı)
+ * GET /api/parent/child-status/:childId
+ */
+router.get("/child-status/:childId", authMiddleware, async (req, res) => {
+  try {
+    const { childId } = req.params;
+    const parentId = req.user.userId;
+
+    // 1️⃣ Çocuğu getir
+    const child = await User.findById(childId).select(
+      "verified pinCreated profileCompleted firstLoginCompleted parentIds"
+    );
+
+    if (!child) {
+      return res.status(404).json({
+        success: false,
+        message: "Çocuk bulunamadı.",
+      });
+    }
+
+    // 2️⃣ Ebeveynlik kontrolü
+    const isParent = child.parentIds?.some(
+      (id) => id.toString() === parentId.toString()
+    );
+    if (!isParent) {
+      return res.status(403).json({
+        success: false,
+        message: "Bu çocuk size bağlı değil.",
+      });
+    }
+
+    // 3️⃣ Çocuğun profil adını ProfileInfo'dan çek
+    const ProfileInfo = require("../models/ProfileInfo");
+    const profile = await ProfileInfo.findOne({ userId: child._id });
+
+    // 4️⃣ Hangi adımda kaldığını belirle
+    let nextStep = "completed";
+    if (!child.verified) nextStep = "verify";
+    else if (!child.pinCreated) nextStep = "createPin";
+    else if (!child.profileCompleted) nextStep = "profileInfo";
+
+    // 5️⃣ Cevap dön
+    res.json({
+      success: true,
+      child: {
+        id: child._id,
+        name: profile?.name || "İsimsiz Kullanıcı",
+        verified: child.verified,
+        pinCreated: child.pinCreated,
+        profileCompleted: child.profileCompleted,
+        firstLoginCompleted: child.firstLoginCompleted,
+      },
+      nextStep, // verify | createPin | profileInfo | completed
+    });
+  } catch (err) {
+    console.error("❌ Çocuk durum getirme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+// 👨‍👩‍👧 Ebeveynin gönderdiği tüm harçlıklar
+router.get("/allowance-history", authMiddleware, async (req, res) => {
+  try {
+    const parentId = req.user.userId;
+    const AllowanceHistory = require("../models/AllowanceHistory");
+
+    const history = await AllowanceHistory.find({ parentId })
+      .populate("childId", "name phone")
+      .sort({ sentAt: -1 });
+
+    res.json({
+      success: true,
+      count: history.length,
+      history,
+    });
+  } catch (err) {
+    console.error("❌ Ebeveyn harçlık geçmişi hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası" });
+  }
+});
+
+
+// 👶 Çocuğun aldığı harçlık geçmişi
+router.get("/allowance-history/:childId", authMiddleware, async (req, res) => {
+  try {
+    const { childId } = req.params;
+    const AllowanceHistory = require("../models/AllowanceHistory");
+
+    const history = await AllowanceHistory.find({ childId })
+      .populate("parentId", "name phone")
+      .sort({ sentAt: -1 });
+
+    res.json({
+      success: true,
+      count: history.length,
+      history,
+    });
+  } catch (err) {
+    console.error("❌ Çocuk harçlık geçmişi hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası" });
+  }
+});
+
+
+// ✅ Yeni görev oluşturma
+router.post("/tasks/add", authMiddleware, async (req, res) => {
+  try {
+    const parentId = req.user.userId;
+    const { childId, title, description, rewardAmount } = req.body;
+
+    if (!childId || !title) {
+      return res.status(400).json({
+        success: false,
+        message: "Görev başlığı ve çocuk ID gereklidir.",
+      });
+    }
+
+    const [parent, child] = await Promise.all([
+      User.findById(parentId),
+      User.findById(childId),
+    ]);
+
+    if (!child || child.role !== "child") {
+      return res.status(404).json({ success: false, message: "Çocuk hesabı bulunamadı." });
+    }
+
+    // 👨‍👩‍👧 Ebeveyn doğrulaması
+    const isParent = child.parentIds.some((id) => id.toString() === parentId.toString());
+    if (!isParent) {
+      return res.status(403).json({ success: false, message: "Bu çocuk size bağlı değil." });
+    }
+
+    // 🆕 Görevi oluştur
+    const task = await Task.create({
+      parentId,
+      childId,
+      title: title.trim(),
+      description: description?.trim() || "",
+      rewardAmount: rewardAmount || 0,
+    });
+
+    // 👶 Çocuğun aktif görevlerine ekle
+    await User.findByIdAndUpdate(childId, { $push: { activeTasks: task._id } });
+
+    // 🔔 Bildirimler (ebeveyn + çocuk)
+    await Promise.all([
+      Notification.create({
+        userId: parentId,
+        type: "task_created",
+        description: `${title} görevi ${rewardAmount ? `₺${rewardAmount}` : ""} ödülle oluşturuldu.`,
+        amount: rewardAmount || 0,
+        status: "success",
+      }),
+      Notification.create({
+        userId: childId,
+        type: "task_assigned",
+        description: `${title} görevi sana atandı.`,
+        amount: rewardAmount || 0,
+        status: "pending",
+      }),
+    ]);
+
+    res.json({ success: true, message: "Görev başarıyla oluşturuldu.", task });
+  } catch (err) {
+    console.error("❌ Görev oluşturma hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+// ✅ Çocuğun görevlerini listeleme
+router.get("/tasks/:childId", authMiddleware, async (req, res) => {
+  try {
+    const { childId } = req.params;
+    const parentId = req.user.userId;
+
+    const tasks = await Task.find({ childId, parentId }).sort({ createdAt: -1 }).lean();
+
+    res.json({ success: true, count: tasks.length, tasks });
+  } catch (err) {
+    console.error("❌ Görev listeleme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+// ✅ Görev tamamlama (ödül aktarımı)
+router.post("/tasks/complete/:taskId", authMiddleware, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const parentId = req.user.userId;
+
+    const task = await Task.findById(taskId);
+    if (!task) return res.status(404).json({ success: false, message: "Görev bulunamadı." });
+    if (task.status === "completed")
+      return res.status(400).json({ success: false, message: "Bu görev zaten tamamlandı." });
+
+    const [parentWallet, childWallet] = await Promise.all([
+      Wallet.findOne({ userId: parentId }),
+      Wallet.findOne({ userId: task.childId }),
+    ]);
+
+    if (!parentWallet || !childWallet)
+      return res.status(404).json({ success: false, message: "Cüzdan bilgileri bulunamadı." });
+
+    if (parentWallet.balance < task.rewardAmount)
+      return res.status(400).json({ success: false, message: "Yetersiz bakiye." });
+
+    // 💸 Ödeme işlemi
+    parentWallet.balance -= task.rewardAmount;
+    childWallet.balance += task.rewardAmount;
+    await Promise.all([parentWallet.save(), childWallet.save()]);
+
+    // ✅ Görevi tamamlandı olarak işaretle
+    task.status = "completed";
+    task.completedAt = new Date();
+    await task.save();
+
+    // 👶 Çocuğun aktif görev listesinden çıkar
+    await User.findByIdAndUpdate(task.childId, {
+      $pull: { activeTasks: task._id },
+    });
+
+    // 🔔 Bildirim (ebeveyn + çocuk)
+    await Promise.all([
+      Notification.create({
+        userId: parentId,
+        type: "task_completed",
+        description: `${task.title} görevi tamamlandı ve ödül gönderildi.`,
+        amount: task.rewardAmount,
+        status: "success",
+      }),
+      Notification.create({
+        userId: task.childId,
+        type: "allowance_received",
+        description: `${task.title} görevi tamamlandı. ₺${task.rewardAmount} ödül hesabına aktarıldı.`,
+        amount: task.rewardAmount,
+        status: "success",
+      }),
+    ]);
+
+    res.json({ success: true, message: "Görev tamamlandı, ödül gönderildi.", task });
+  } catch (err) {
+    console.error("❌ Görev tamamlama hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+/**
+ * 🎯 Önerilen görevleri getir
+ * GET /api/parent/suggested-tasks
+ */
+router.get("/suggested-tasks", authMiddleware, async (req, res) => {
+  try {
+    const { category } = req.query;
+
+    const filter = { isActive: true };
+    if (category) filter.category = category;
+
+    const tasks = await SuggestedTask.find(filter)
+      .sort({ category: 1, createdAt: -1 })
+      .select("category title description rewardAmount")
+      .lean();
+
+    res.json({
+      success: true,
+      count: tasks.length,
+      tasks,
+    });
+  } catch (err) {
+    console.error("❌ Önerilen görevleri getirme hatası:", err);
+    res.status(500).json({ success: false, message: "Sunucu hatası." });
+  }
+});
+
+/**
+ * 🎯 Bekleyen harçlık isteklerini getir
+ * GET /api/parent/allowance-requests
+ */
+router.get("/allowance-requests", authMiddleware, async (req, res) => {
+  try {
+    const parentId = req.user.userId;
+
+    // 1️⃣ Role kontrolü
+    if (req.user.role !== "parent") {
+      return res.status(403).json({
+        success: false,
+        message: "Bu işlem sadece ebeveyn kullanıcılar tarafından yapılabilir.",
+      });
+    }
+
+    // 2️⃣ Pending allowance_request bildirimlerini bul
+    const requests = await Notification.find({
+      userId: parentId,
+      type: "allowance_request",
+      status: "pending",
+    })
+      .populate("relatedUserId", "name phone role")
+      .sort({ createdAt: -1 });
+
+    if (!requests.length) {
+      return res.json({
+        success: true,
+        requests: [],
+        message: "Bekleyen harçlık isteği bulunmamaktadır.",
+      });
+    }
+
+    // 3️⃣ Yanıt formatı
+    const formatted = requests.map((r) => ({
+      id: r._id,
+      childId: r.relatedUserId?._id,
+      childName: r.relatedUserId?.name || "Bilinmeyen Çocuk",
+      phone: r.relatedUserId?.phone || "",
+      amount: r.amount,
+      description: r.description,
+      createdAt: r.createdAt,
+      status: r.status,
+    }));
+
+    res.json({
+      success: true,
+      count: formatted.length,
+      requests: formatted,
+    });
+  } catch (err) {
+    console.error("❌ Harçlık isteklerini getirme hatası:", err);
+    res.status(500).json({
+      success: false,
+      message: "Sunucu hatası: " + err.message,
+    });
+  }
+});
+
+
+
+
+
+module.exports = router;

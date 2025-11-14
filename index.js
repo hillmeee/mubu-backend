@@ -26,21 +26,28 @@ const profileRoutes = require("./routes/profile");// 👈 yeni ekledik
 const piggyBankRoutes = require("./routes/piggybankRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
 const subscriptionRoutes = require("./routes/subscriptionRoutes");
+const parentRoutes = require("./routes/parentRoutes");
+const allowanceRoutes = require("./routes/allowanceRoutes");
+const childRoutes = require("./routes/childRoutes");
 const adminAuthRoutes = require("./routes/adminAuth"); // 👈 admin seed route eklendi
 const adminRoutes = require("./routes/adminRoutes");
-//console.log("✅ adminAuth route eklendi");
+
 // ✅ Routes use
 app.use("/api/auth", authRoutes);
 app.use("/api/sms", smsRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/profile", profileRoutes);
-app.use("/uploads", express.static(path.join(__dirname, "uploads"))); // 👈 yeni ekledik
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/api/notifications", notificationRoutes);
-app.use("/api/piggybank", piggyBankRoutes);
 app.use("/api", transactionRoutes);
 app.use("/api/subscription", subscriptionRoutes);
+app.use("/api/parent", parentRoutes);
+app.use("/api/allowance", allowanceRoutes);
+app.use("/api/child", childRoutes);  // 👈 BUNU piggybank’tan önce taşı
+app.use("/api/piggybank", piggyBankRoutes); // 👈 EN SONDA OLMALI ✅
 app.use("/api/admin", adminAuthRoutes); // 👈 admin seed route aktif
 app.use("/api/admin", adminRoutes);
+
 
 // ✅ Test endpoint
 app.get("/", (req, res) => {

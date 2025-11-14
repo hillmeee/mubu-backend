@@ -1,4 +1,4 @@
-// C:\Users\ahmet\admins\mubu-backend\middleware\authorizeRoles.js
+// C:\Users\yasar\mubu-backend\middleware\authorizeRoles.js
 
 module.exports = (...allowedRoles) => {
   return (req, res, next) => {

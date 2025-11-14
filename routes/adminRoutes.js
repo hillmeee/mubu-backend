@@ -52,6 +52,29 @@ router.get("/users", authMiddleware, authorizeRoles("admin"), async (req, res) =
   }
 });
 
+// 📊 Admin Dashboard Stats
+router.get("/stats", authMiddleware, authorizeRoles("admin"), async (req, res) => {
+  try {
+    const users = await User.countDocuments();
+    const wallets = await Wallet.countDocuments();
+    const notifications = await Notification.countDocuments();
+    const piggybanks = await PiggyBank.countDocuments();
+
+    res.json({
+      success: true,
+      users,
+      wallets,
+      notifications,
+      piggybanks,
+      message: "Dashboard stats loaded.",
+    });
+  } catch (err) {
+    console.error("❌ Stats fetch error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
 // ✅ 3. Kullanıcı Ban / Aktif durumu değiştir
 router.patch("/user/:id/toggle-ban", authMiddleware, authorizeRoles("admin"), async (req, res) => {
   try {

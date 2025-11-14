@@ -1,36 +1,31 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 
-const authMiddleware = async (req, res, next) => {
+module.exports = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ success: false, message: "Yetkisiz erişim." });
+    const token = req.headers["authorization"]?.split(" ")[1];
+    if (!token) {
+      return res.status(401).json({ message: "Token bulunamadı" });
     }
 
-    const token = authHeader.split(" ")[1];
+    // 📌 Token decode
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // 🔹 Kullanıcıyı bul
+    // 📌 Kullanıcı DB'den alınıyor
     const user = await User.findById(decoded.userId);
-
     if (!user) {
-      return res.status(401).json({ success: false, message: "Kullanıcı bulunamadı." });
+      return res.status(401).json({ message: "Geçersiz kullanıcı" });
     }
 
-    // 🔹 req.user içine bilgileri koy
-    req.user = {
-      userId: user._id,
-      role: user.role,
-      email: user.email,
-    };
+    // 📌 Token içindeki deviceId ile DB’deki deviceId karşılaştır
+    if (decoded.deviceId !== user.deviceId) {
+      return res.status(401).json({ message: "Bu cihaz için token geçersiz" });
+    }
 
+    req.user = decoded;
     next();
   } catch (err) {
-    console.error("authMiddleware hata:", err.message);
-    res.status(401).json({ success: false, message: "Token geçersiz veya süresi dolmuş." });
+    console.error("❌ Auth middleware hatası:", err);
+    return res.status(401).json({ message: "Token geçersiz veya süresi dolmuş" });
   }
 };
-
-module.exports = authMiddleware;

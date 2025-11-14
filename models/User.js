@@ -1,60 +1,100 @@
-// 📁 C:\Users\ahmet\admins\mubu-backend\models\User.js
-
+// 📂 models/User.js
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema(
   {
-    name: { type: String, required: false }, // doğrulamadan önce boş olabilir
-    phone: { type: String, required: false, unique: true, sparse: true }, // Admin için opsiyonel
-    email: { type: String, required: false, unique: true, sparse: true }, // Email alanı eklendi
+    // 👤 Temel bilgiler
+    name: { type: String, required: false },
+    phone: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    pin: { type: String }, // 👈 Hashlenmiş PIN burada saklanacak
+    pin: { type: String },
 
-    // Güvenlik sorusu
-    securityQuestion: { type: String, required: false }, // sabit listeden seçilecek
-    securityAnswer: { type: String, required: false },   // bcrypt ile hashlenmiş cevap
+    // 🔐 Güvenlik bilgileri
+    securityQuestion: { type: String, required: false },
+    securityAnswer: { type: String, required: false },
 
-    // Kullanıcı rolü
+    // 🧩 Kullanıcı rolü
     role: {
       type: String,
       enum: ["individual", "parent", "child", "admin"],
-      default: "individual"
+      default: "individual",
     },
 
-    // Parent – Child ilişkisi
-    parentId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }, 
-    children: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], 
+    // 👨‍👩‍👧 Parent–Child ilişkileri
+    parentIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "User", default: [] }],
+    children: [{ type: mongoose.Schema.Types.ObjectId, ref: "User", default: [] }],
 
-    // Kullanıcı durum alanları
-    verified: { type: Boolean, default: false },         // SMS doğrulandı mı?
-    pinCreated: { type: Boolean, default: false },       // 5 haneli şifre oluşturuldu mu?
-    profileCompleted: { type: Boolean, default: false }, // Detaylı bilgiler girildi mi?
-    firstLoginCompleted: { type: Boolean, default: false }, // İlk kez ana sayfaya girdi mi?
-    deviceId: { type: String, default: null },           // Kullanıcının kayıtlı cihaz kimliği
+    // 💍 Eş ilişkisi
+    wife_husband: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
 
-    inviteID: { type: String, unique: true }, // Kullanıcıya özel davet kodu (#123456789)
-    
+    // 📩 Eş davetleri (gelen)
+    pendingSpouseInvites: [
+      {
+        from: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        status: { type: String, enum: ["pending", "accepted", "declined"], default: "pending" },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+
+    // 📤 Gönderilen eş davetleri
+    sentSpouseInvites: [
+      {
+        to: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        status: { type: String, enum: ["pending", "accepted", "declined"], default: "pending" },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+
+    // 🪙 Ebeveyn paketi – abonelik bilgileri
+    subscriptionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ParentSubscription",
+      default: null,
+    },
+    subscriptionActive: { type: Boolean, default: false },
+    subscriptionExpiresAt: { type: Date, default: null },
+
+    // 💰 Harçlık geçmişi
+    allowanceHistory: [{ type: mongoose.Schema.Types.ObjectId, ref: "Notification" }],
+
+    // 🟣 Görev sistemi
+    activeTasks: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Task",
+        default: [],
+      },
+    ],
+
+    // 🔵 Kullanıcı durum alanları
+    verified: { type: Boolean, default: false },
+    pinCreated: { type: Boolean, default: false },
+    profileCompleted: { type: Boolean, default: false },
+    firstLoginCompleted: { type: Boolean, default: false },
+    deviceId: { type: String, default: null },
+
+    // 📛 Davet kodu
+    inviteID: { type: String, unique: true },
+
+    // 👤 Profil referansı
     profileInfoId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ProfileInfo",
-      default: null
+      default: null,
     },
 
-    // Abonelik (ebeveyn paketi için)
-    subscriptionActive: { type: Boolean, default: false }, 
-
-    //Abonelik bitiş süresi
-    subscriptionExpiresAt: { type: Date, default: null },
-    // SMS doğrulama alanları
+    // 🔢 SMS doğrulama
     verificationCode: { type: String },
     verificationExpires: { type: Date },
 
-    // 🟣 Yeni alan — kullanıcı banlanabilir
-    isBanned: { type: Boolean, default: false },
-
-    createdAt: { type: Date, default: Date.now }
+    // 🕓 Kayıt tarihi
+    createdAt: { type: Date, default: Date.now },
   },
-  { timestamps: true } // otomatik createdAt & updatedAt ekler
+  { timestamps: true }
 );
 
 module.exports = mongoose.model("User", userSchema);
